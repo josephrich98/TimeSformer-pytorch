@@ -204,7 +204,13 @@ class TimeSformer(nn.Module):
             nn.Linear(dim, num_classes)
         )
 
-    def forward(self, video, mask = None):
+        self.time_mlp = nn.Sequential(
+            nn.Linear(1, dim),
+            nn.GELU(),
+            nn.Linear(dim, dim)
+        )
+
+    def forward(self, video, mask = None, times = None):
         b, f, _, h, w, *_, device, p = *video.shape, video.device, self.patch_size
         assert h % p == 0 and w % p == 0, f'height {h} and width {w} of video must be divisible by the patch size {p}'
 
@@ -222,6 +228,20 @@ class TimeSformer(nn.Module):
 
         cls_token = repeat(self.cls_token, 'n d -> b n d', b = b)
         x =  torch.cat((cls_token, tokens), dim = 1)
+
+        # add continuous time embeddings
+
+        if times is not None:
+            assert times.shape == (b, f), f"times must be (B, F), got {times.shape}"
+
+            # times -> (B, F, 1) -> (B, F, D)
+            time_emb = self.time_mlp(times.unsqueeze(-1).float())
+
+            # repeat time embedding for all patches in each frame
+            time_emb = repeat(time_emb, 'b f d -> b (f n) d', n = n)
+
+            # add to patch tokens only (not CLS)
+            x[:, 1:] = x[:, 1:] + time_emb
 
         # positional embedding
 

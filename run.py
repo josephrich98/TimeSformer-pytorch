@@ -13,7 +13,8 @@ test_set_cases = ["Keck0064", "Keck0303", "Keck0070", "Keck0391", "Keck0618", "K
 batch_size = 8
 learning_rate = 1e-4
 model_dim = 512
-epochs = 50
+epochs = 100
+accurate_time = True
 seed = 42
 
 phase_to_expected_time_range = {
@@ -65,9 +66,13 @@ def load_sequence_from_folder(
 
     frames = []
     mask = []
+    times = []
 
     for phase in ordered_phases:
         path = os.path.join(folder, f"{phase}.npy")
+
+        beginning_time = phase_to_expected_time_range[phase][0]
+        times.append(beginning_time)
 
         if os.path.exists(path):
             arr = np.load(path).astype(dtype)
@@ -97,7 +102,7 @@ def load_sequence_from_folder(
     video = np.stack(frames, axis=0)   # (T, 1, H, W)
     mask  = np.array(mask, dtype=bool) # (T,)
 
-    return torch.from_numpy(video), torch.from_numpy(mask)
+    return torch.from_numpy(video), torch.from_numpy(mask), torch.tensor(times, dtype=torch.float32)
 
 set_seed(seed)
 
@@ -152,10 +157,10 @@ for epoch in range(epochs):
         batch = train_filenames[i:i + batch_size]
 
         # batch is a list of folder names
-        videos, masks, batch_labels = [], [], []
+        videos, masks, times, batch_labels = [], [], [], []
         for case_name in batch:
             folder_path = os.path.join(data_root, case_name)
-            video, mask = load_sequence_from_folder(
+            video, mask, time = load_sequence_from_folder(
                 folder_path,
                 phase_to_expected_time_range=phase_to_expected_time_range,
                 max_frames=4,
@@ -164,6 +169,7 @@ for epoch in range(epochs):
             )
             videos.append(video)
             masks.append(mask)
+            times.append(time)
 
             if case_name not in labels:
                 raise ValueError(f"Case {case_name} not found in labels JSON")
@@ -172,15 +178,20 @@ for epoch in range(epochs):
 
         videos = torch.stack(videos, dim=0)  # (B, T=4, C=1, H=256, W=256)
         masks = torch.stack(masks, dim=0)    # (B, T=4)
+        times = torch.stack(times, dim=0)    # (B, T=4)
 
         videos = videos.repeat(1, 1, 3, 1, 1)  # (B, T=4, C=3, H=256, W=256) - make 3 channels
 
         videos = videos.to(device)
         masks = masks.to(device)
+        times = times.to(device)
         batch_labels = torch.tensor(batch_labels, dtype=torch.long).to(device)
 
+        if not accurate_time:
+            times = None  # disable accurate time input
+
         optimizer.zero_grad()
-        pred = model(videos, mask=masks)
+        pred = model(videos, mask=masks, times=times)
         loss = criterion(pred, batch_labels)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -203,7 +214,7 @@ for epoch in range(epochs):
     y_true, y_pred, y_probs = [], [], []
     for filename in test_filenames:
         folder_path = os.path.join(data_root, filename)
-        video, mask = load_sequence_from_folder(
+        video, mask, times = load_sequence_from_folder(
             folder_path,
             phase_to_expected_time_range=phase_to_expected_time_range,
             max_frames=4,
@@ -213,15 +224,20 @@ for epoch in range(epochs):
         label = test_labels[filename]
         video = video.unsqueeze(0)  # (1, T=4, C=1, H=256, W=256)
         mask = mask.unsqueeze(0)      # (1, T=4)
+        times = times.unsqueeze(0)    # (1, T=4)
 
         video = video.repeat(1, 1, 3, 1, 1)  # (1, T=4, C=3, H=256, W=256) - make 3 channels
 
         video = video.to(device)
         mask = mask.to(device)
+        times = times.to(device)
         label = torch.tensor([label], dtype=torch.long).to(device)
+
+        if not accurate_time:
+            times = None  # disable accurate time input
         
         with torch.no_grad():
-            pred = model(video, mask = mask) # (1, num_classes=3)
+            pred = model(video, mask=mask, times=times)  # (1, num_classes=3)
 
         loss = criterion(pred, label)
         total_loss += loss.item()
