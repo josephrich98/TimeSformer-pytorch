@@ -13,7 +13,7 @@ test_set_cases = ["Keck0064", "Keck0303", "Keck0070", "Keck0391", "Keck0618", "K
 batch_size = 8
 learning_rate = 1e-4
 model_dim = 512
-epochs = 3
+epochs = 50
 seed = 42
 
 phase_to_expected_time_range = {
@@ -106,12 +106,12 @@ with open(labels_json) as f:
 
 train_filenames = [
     f for f in os.listdir(data_root)
-    if os.path.isdir(os.path.join(data_root, f)) and f not in test_set_cases
+    if os.path.isdir(os.path.join(data_root, f)) and f in labels and f not in test_set_cases
 ]
 
 test_filenames = [
     f for f in os.listdir(data_root)
-    if os.path.isdir(os.path.join(data_root, f)) and f in test_set_cases
+    if os.path.isdir(os.path.join(data_root, f)) and f in labels and f in test_set_cases
 ]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -140,6 +140,7 @@ num_classes = len(train_counts)
 weights = torch.tensor([total_counts/train_counts[c] for c in range(num_classes)], dtype=torch.float32).to(device)
 criterion = torch.nn.CrossEntropyLoss(weight=weights)
 
+print("Starting training...")
 for epoch in range(epochs):
     #* Train
     random.shuffle(train_filenames)  # in-place randomization
@@ -156,6 +157,7 @@ for epoch in range(epochs):
             folder_path = os.path.join(data_root, case_name)
             video, mask = load_sequence_from_folder(
                 folder_path,
+                phase_to_expected_time_range=phase_to_expected_time_range,
                 max_frames=4,
                 target_shape=(256, 256),
                 dtype=np.float32
@@ -189,7 +191,7 @@ for epoch in range(epochs):
         y_pred_batch = pred.argmax(dim=1)
         y_pred.extend(y_pred_batch.cpu().numpy().tolist())
         y_probs_batch = torch.softmax(pred, dim=1)[:, 1]  #
-        y_probs.extend(y_probs_batch.cpu().numpy().tolist())
+        y_probs.extend(y_probs_batch.detach().cpu().numpy().tolist())
 
     avg_train_loss = total_loss / (len(train_filenames) // batch_size + 1)
     train_accuracy = accuracy_score(y_true, y_pred)
@@ -203,6 +205,7 @@ for epoch in range(epochs):
         folder_path = os.path.join(data_root, filename)
         video, mask = load_sequence_from_folder(
             folder_path,
+            phase_to_expected_time_range=phase_to_expected_time_range,
             max_frames=4,
             target_shape=(256, 256),
             dtype=np.float32
@@ -215,18 +218,18 @@ for epoch in range(epochs):
 
         video = video.to(device)
         mask = mask.to(device)
-        label = torch.tensor(label, dtype=torch.long).to(device)
+        label = torch.tensor([label], dtype=torch.long).to(device)
         
         with torch.no_grad():
             pred = model(video, mask = mask) # (1, num_classes=3)
 
         loss = criterion(pred, label)
         total_loss += loss.item()
-        y_true.append(label)
+        y_true.append(label.item())
         y_pred_batch = pred.argmax(dim=1)
         y_pred.append(y_pred_batch.cpu().numpy().item())
         y_probs_batch = torch.softmax(pred, dim=1)[:, 1]  #
-        y_probs.append(y_probs_batch.cpu().numpy().item())
+        y_probs.append(y_probs_batch.detach().cpu().numpy().item())
     avg_val_loss = total_loss / len(test_filenames)
     val_accuracy = accuracy_score(y_true, y_pred)
     print(f"Epoch {epoch+1}/{epochs} - Val Loss: {avg_val_loss:.4f} - Val Accuracy: {val_accuracy:.4f}")
